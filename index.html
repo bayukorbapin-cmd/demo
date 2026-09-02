@@ -145,6 +145,7 @@ tfoot td.txt{text-align:left;}
 #loginOverlay{position:fixed; inset:0; background:linear-gradient(160deg,var(--navy-deep),var(--navy)); display:flex;
   align-items:center; justify-content:center; z-index:1000;}
 #loginOverlay.hidden{display:none;}
+#cloudUpdateBanner.hidden{display:none;}
 .login-card{background:var(--card); border-radius:14px; box-shadow:0 10px 40px rgba(0,0,0,.35); padding:32px 30px; width:100%; max-width:340px;}
 .login-card .mark{width:44px; height:44px; border-radius:10px; background:var(--yellow); display:flex; align-items:center; justify-content:center; margin:0 auto 14px;}
 .login-card .mark svg{width:24px; height:24px;}
@@ -159,6 +160,12 @@ tfoot td.txt{text-align:left;}
 </style>
 </head>
 <body>
+
+<div id="cloudUpdateBanner" class="hidden" style="position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:9999; max-width:520px; width:calc(100% - 24px); background:#123A6B; color:#fff; padding:12px 14px; border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,.25); display:flex; align-items:center; gap:10px; font-size:13px;">
+  <span id="cloudUpdateBannerText" style="flex:1;">Ada data terbaru dari perangkat lain.</span>
+  <button type="button" id="btnCloudUpdateLoad" style="background:#fff; color:#123A6B; border:none; border-radius:6px; padding:6px 10px; font-weight:600; cursor:pointer; white-space:nowrap;">Muat Sekarang</button>
+  <button type="button" id="btnCloudUpdateDismiss" style="background:transparent; color:#fff; border:1px solid rgba(255,255,255,.5); border-radius:6px; padding:6px 10px; cursor:pointer; white-space:nowrap;">Nanti</button>
+</div>
 
 <div id="loginOverlay">
   <div class="login-card">
@@ -422,11 +429,16 @@ tfoot td.txt{text-align:left;}
     <div class="card" style="margin-top:14px;">
       <h3 style="margin-top:0;">Sinkronisasi Cloud (Supabase)</h3>
       <p class="page-sub" style="margin-top:2px;">Simpan/ambil cadangan data ke/dari database cloud, supaya bisa diakses dari perangkat lain.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0 10px;">
+        <input type="checkbox" id="chkAutoSync">
+        <span>Aktifkan Auto-Sync (kirim otomatis tiap ada perubahan &amp; cek pembaruan dari PC lain secara berkala)</span>
+      </label>
       <div class="footer-actions">
         <button type="button" class="btn-primary" id="btnCloudBackup">Cadangkan ke Cloud</button>
         <button type="button" class="btn-ghost" id="btnCloudRestore">Pulihkan dari Cloud</button>
         <span id="cloudSyncStatus" style="font-size:12px; color:var(--ink-soft); align-self:center;"></span>
       </div>
+      <p class="page-sub" style="margin-top:8px; font-size:12px;">Catatan: Auto-Sync mengirim seluruh data (bukan per baris), jadi kalau dua PC mengedit persis di waktu yang sama, yang terakhir kirim yang tersimpan. Untuk penggunaan normal (bergantian input), ini aman dan otomatis nyambung antar PC.</p>
     </div>
   </section>
   <section class="panel" id="panel-pengaturan-penomoran">
@@ -2468,6 +2480,12 @@ const LS_BASE = { barang:'sa_barang', vendor:'sa_vendor', customer:'sa_customer'
   pphBadan:'sa_pphBadan', stockOpname:'sa_stockOpname', jabatan:'sa_jabatan', masaKerjaPajak:'sa_masaKerjaPajak',
   pphKoreksiTransaksi:'sa_pphKoreksiTransaksi' };
 const LS = LS_BASE;
+/* ---- Auto-Sync (flag & helper) — didefinisikan di awal supaya aman dipanggil dari mana saja ---- */
+let __appReady = false; // baru true setelah seluruh script (termasuk koneksi Supabase) selesai dimuat
+function isAutoSyncEnabled(){ const v = localStorage.getItem('sa_autosync_enabled'); return v===null ? true : v==='1'; } // default AKTIF
+function setAutoSyncEnabled(v){ localStorage.setItem('sa_autosync_enabled', v?'1':'0'); }
+function getLastKnownCloudTs(){ return localStorage.getItem('sa_cloud_last_known')||''; }
+function setLastKnownCloudTs(ts){ localStorage.setItem('sa_cloud_last_known', ts||''); }
 function ld(key, def){ const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }
 let barangList = ld(LS.barang, []);
 let satuanBarangList = ld(LS.satuanBarang, []);
@@ -2678,6 +2696,11 @@ const save = {
   masaKerjaPajak:()=>localStorage.setItem(LS.masaKerjaPajak, JSON.stringify(masaKerjaPajakList)),
   settings:()=>localStorage.setItem(LS.settings, JSON.stringify(settings))
 };
+/* Bungkus setiap fungsi save.xxx() supaya otomatis menjadwalkan push ke cloud (auto-sync) setiap ada perubahan data. */
+Object.keys(save).forEach(function(k){
+  const _origSaveFn = save[k];
+  save[k] = function(){ _origSaveFn(); scheduleAutoPush(); };
+});
 function nextSeq(){
   if(DEMO_MODE && seq >= DEMO_MAX_TRANSAKSI){
     updateDemoBadge();
@@ -10093,13 +10116,15 @@ document.getElementById('btnCloudBackup').addEventListener('click', async ()=>{
   setCloudStatus('Mengirim ke cloud...');
   try{
     const payload = buildBackupPayload();
+    const nowIso = new Date().toISOString();
     const { error } = await supabaseClient.from('sa_backup').upsert({
       company_id: CLOUD_COMPANY_ID,
       company_name: (settings.company&&settings.company.nama) || 'Trial',
       data: payload,
-      updated_at: new Date().toISOString()
+      updated_at: nowIso
     });
     if(error) throw error;
+    setLastKnownCloudTs(nowIso);
     setCloudStatus('Berhasil dicadangkan ke cloud pukul '+new Date().toLocaleTimeString());
   }catch(err){ console.error(err); setCloudStatus('Gagal mencadangkan: '+(err.message||err), true); }
 });
@@ -10112,9 +10137,73 @@ document.getElementById('btnCloudRestore').addEventListener('click', async ()=>{
     if(error) throw error;
     if(!data){ setCloudStatus('Belum ada cadangan cloud.', true); return; }
     restoreFromPayload(data.data);
+    setLastKnownCloudTs(data.updated_at);
+    hideCloudUpdateBanner();
     setCloudStatus('Berhasil dipulihkan dari cloud (terakhir disimpan: '+new Date(data.updated_at).toLocaleString()+')');
     alert('Data berhasil dipulihkan dari cloud.');
   }catch(err){ console.error(err); setCloudStatus('Gagal memulihkan: '+(err.message||err), true); }
+});
+
+/* ---- Auto-Sync: kirim otomatis tiap ada perubahan + cek berkala data terbaru dari PC lain ---- */
+const chkAutoSync = document.getElementById('chkAutoSync');
+if(chkAutoSync){
+  chkAutoSync.checked = isAutoSyncEnabled();
+  chkAutoSync.addEventListener('change', ()=>{ setAutoSyncEnabled(chkAutoSync.checked); setCloudStatus(chkAutoSync.checked ? 'Auto-Sync diaktifkan.' : 'Auto-Sync dimatikan (manual saja).'); });
+}
+let autoPushTimer = null;
+function scheduleAutoPush(){
+  if(!__appReady || !isAutoSyncEnabled() || !supabaseClient) return;
+  clearTimeout(autoPushTimer);
+  autoPushTimer = setTimeout(doAutoPush, 2500); // tunggu jeda singkat setelah perubahan terakhir sebelum kirim
+}
+async function doAutoPush(){
+  if(!supabaseClient) return;
+  try{
+    const payload = buildBackupPayload();
+    const nowIso = new Date().toISOString();
+    const { error } = await supabaseClient.from('sa_backup').upsert({
+      company_id: CLOUD_COMPANY_ID,
+      company_name: (settings.company&&settings.company.nama) || 'Trial',
+      data: payload,
+      updated_at: nowIso
+    });
+    if(error) throw error;
+    setLastKnownCloudTs(nowIso);
+    setCloudStatus('Auto-Sync: tersimpan ke cloud pukul '+new Date().toLocaleTimeString());
+  }catch(err){ console.error('Auto-Sync (kirim) gagal:', err); setCloudStatus('Auto-Sync gagal mengirim: '+(err.message||err), true); }
+}
+function isLoggedInNow(){ const el = document.getElementById('loginOverlay'); return el && el.classList.contains('hidden'); }
+async function checkCloudUpdate(){
+  if(!__appReady || !isAutoSyncEnabled() || !supabaseClient || !isLoggedInNow()) return;
+  try{
+    const { data, error } = await supabaseClient.from('sa_backup').select('updated_at').eq('company_id', CLOUD_COMPANY_ID).maybeSingle();
+    if(error) throw error;
+    if(!data || !data.updated_at) return;
+    const known = getLastKnownCloudTs();
+    if(!known || new Date(data.updated_at) > new Date(known)){
+      showCloudUpdateBanner(data.updated_at);
+    }
+  }catch(err){ console.error('Auto-Sync (cek update) gagal:', err); }
+}
+function showCloudUpdateBanner(updatedAt){
+  const el = document.getElementById('cloudUpdateBanner'); if(!el) return;
+  el.dataset.updatedAt = updatedAt;
+  document.getElementById('cloudUpdateBannerText').textContent = 'Ada data terbaru dari perangkat lain (disimpan '+new Date(updatedAt).toLocaleString()+'). Muat sekarang supaya data di PC ini ikut update.';
+  el.classList.remove('hidden');
+}
+function hideCloudUpdateBanner(){ const el = document.getElementById('cloudUpdateBanner'); if(el) el.classList.add('hidden'); }
+document.getElementById('btnCloudUpdateDismiss') && document.getElementById('btnCloudUpdateDismiss').addEventListener('click', hideCloudUpdateBanner);
+document.getElementById('btnCloudUpdateLoad') && document.getElementById('btnCloudUpdateLoad').addEventListener('click', async ()=>{
+  if(!supabaseClient) return;
+  try{
+    const { data, error } = await supabaseClient.from('sa_backup').select('data,updated_at').eq('company_id', CLOUD_COMPANY_ID).maybeSingle();
+    if(error) throw error;
+    if(!data){ hideCloudUpdateBanner(); return; }
+    restoreFromPayload(data.data);
+    setLastKnownCloudTs(data.updated_at);
+    hideCloudUpdateBanner();
+    setCloudStatus('Data terbaru dari perangkat lain berhasil dimuat ('+new Date(data.updated_at).toLocaleString()+').');
+  }catch(err){ console.error(err); alert('Gagal memuat data terbaru: '+(err.message||err)); }
 });
 
 document.getElementById('btnResetAll').addEventListener('click', ()=>{
@@ -10149,6 +10238,7 @@ document.getElementById('formLogin').addEventListener('submit', e=>{
     hideLoginOverlay();
     applyAksesRestriction();
     document.querySelector('.navitem[data-target="dashboard"]').click();
+    checkCloudUpdate(); // langsung cek apakah ada data lebih baru dari PC lain setelah login
   } else {
     document.getElementById('loginError').textContent = 'Kode atau password salah.';
   }
@@ -10180,6 +10270,11 @@ document.getElementById('arTanggal').valueAsDate = new Date();
 document.getElementById('apTanggal').valueAsDate = new Date();
 populateAkunSelects(); populateBarangSelects(); populateVendorSelects(); populateCustomerSelects();
 renderDashboard();
+
+/* ---- Aktifkan Auto-Sync setelah seluruh aplikasi selesai dimuat ---- */
+__appReady = true;
+checkCloudUpdate(); // cek sekali saat aplikasi dibuka/direfresh
+setInterval(checkCloudUpdate, 25000); // lalu cek berkala tiap 25 detik selagi aplikasi terbuka
 
 </script>
 </body>
