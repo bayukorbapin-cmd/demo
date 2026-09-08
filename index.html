@@ -3705,6 +3705,7 @@ function cetakLaporanPdf(title, headers, rows, opts){
   opts = opts || {};
   const s = settings;
   const logoHtml = s.desain.logoDataUrl ? `<img src="${s.desain.logoDataUrl}" style="height:75px; max-width:200px; object-fit:contain;">` : '';
+  const theadHtml = '<tr>' + headers.map(h=>`<th>${h}</th>`).join('') + '</tr>';
   const tbodyHtml = rows.map(r=>'<tr>'+r.map(c=>`<td>${c===undefined||c===null||c===''?'-':c}</td>`).join('')+'</tr>').join('');
   const signHtml = opts.signKey ? buildSignatureBlock(opts.signKey) : '';
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>
